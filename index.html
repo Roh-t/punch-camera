@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Punch Camera</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      background: #0f172a;
+      display: flex; align-items: center;
+      justify-content: center; min-height: 100vh;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    .box {
+      background: white; border-radius: 20px;
+      padding: 24px; width: 400px; text-align: center;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+    }
+    h5 { color:#1e293b; font-size:20px; font-weight:800; margin-bottom:8px; }
+    .badge-in  { background:#dcfce7; color:#16a34a; padding:5px 18px; border-radius:50px; font-weight:700; font-size:13px; display:inline-block; margin-bottom:14px; }
+    .badge-out { background:#fee2e2; color:#dc2626; padding:5px 18px; border-radius:50px; font-weight:700; font-size:13px; display:inline-block; margin-bottom:14px; }
+    video, #preview {
+      width:100%; border-radius:12px; max-height:260px;
+      background:#000; display:block; object-fit:cover;
+    }
+    #preview { display:none; }
+    .btn-main {
+      width:100%; padding:13px; margin-top:14px; border:none;
+      border-radius:50px; font-size:15px; font-weight:700; cursor:pointer;
+      background: linear-gradient(135deg, #2A7B9B, #57C785);
+      color:white; transition:0.2s;
+    }
+    .btn-main:hover { filter:brightness(1.1); transform:translateY(-1px); }
+    .btn-main:disabled { opacity:0.5; cursor:not-allowed; transform:none; }
+    .row-btns { display:none; gap:10px; margin-top:12px; }
+    .btn-retake  { flex:1; padding:11px; border:none; border-radius:50px; background:#f59e0b; color:white; font-weight:700; cursor:pointer; }
+    .btn-confirm { flex:1; padding:11px; border:none; border-radius:50px; background:#10b981; color:white; font-weight:700; cursor:pointer; }
+    .msg { font-size:12px; color:#64748b; margin-top:10px; min-height:18px; }
+    .err { color:#ef4444; }
+    .loader { display:none; margin:10px auto; border:3px solid #e2e8f0; border-top:3px solid #2A7B9B; border-radius:50%; width:32px; height:32px; animation:spin 0.8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .done-box { display:none; padding:20px; }
+    .done-box .icon { font-size:48px; }
+    .done-box p { font-weight:700; color:#16a34a; margin-top:8px; font-size:16px; }
+  </style>
+</head>
+<body>
+<div class="box">
+  <h5>📸 Attendance Capture</h5>
+  <div id="punch-badge" class="badge-in">PUNCH IN</div>
+
+  <!-- CAMERA VIEW -->
+  <div id="camera-section">
+    <video id="videoEl" autoplay playsinline muted></video>
+    <img id="preview" alt="captured" />
+
+    <button class="btn-main" id="btn-capture" onclick="capturePhoto()" disabled>
+      📷 Capture Photo
+    </button>
+    <div class="row-btns" id="row-btns">
+      <button class="btn-retake"  onclick="retakePhoto()">🔄 Retake</button>
+      <button class="btn-confirm" onclick="confirmAndSend()">✅ Confirm Punch</button>
+    </div>
+
+    <div class="loader" id="loader"></div>
+    <p class="msg" id="msg">Requesting camera access...</p>
+  </div>
+
+  <!-- SUCCESS VIEW (shown after sending) -->
+  <div class="done-box" id="done-box">
+    <div class="icon">✅</div>
+    <p>Punch data sent!<br>You can close this window.</p>
+  </div>
+</div>
+
+<script>
+  /* ── READ URL PARAMS ───────────────────── */
+  const params    = new URLSearchParams(window.location.search);
+  const action    = params.get('action') || 'IN';
+  /* origin of the GAS app — passed as ?origin=https://script.google.com */
+  const gasOrigin = params.get('origin') || '*';
+
+  document.getElementById('punch-badge').textContent = action === 'IN' ? 'PUNCH IN' : 'PUNCH OUT';
+  document.getElementById('punch-badge').className   = action === 'IN' ? 'badge-in' : 'badge-out';
+
+  let stream          = null;
+  let capturedBase64  = null;
+
+  /* ── START CAMERA ──────────────────────── */
+  async function startCamera() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode:'user', width:{ideal:640}, height:{ideal:480} },
+        audio: false
+      });
+      const v = document.getElementById('videoEl');
+      v.srcObject = stream;
+      v.onloadedmetadata = () => {
+        v.play();
+        document.getElementById('btn-capture').disabled = false;
+        setMsg('✅ Camera ready — look at the camera and click Capture.');
+      };
+    } catch(err) {
+      console.error(err);
+      setMsg('❌ ' + err.message, true);
+      /* still allow punch without photo */
+      const b = document.getElementById('btn-capture');
+      b.disabled   = false;
+      b.textContent = '📍 Punch Without Photo';
+      b.onclick     = () => getLocationThenSend(null);
+    }
+  }
+
+  /* ── CAPTURE ───────────────────────────── */
+  function capturePhoto() {
+    const v = document.getElementById('videoEl');
+    const c = document.createElement('canvas');
+    c.width  = v.videoWidth  || 640;
+    c.height = v.videoHeight || 480;
+    /* mirror selfie */
+    const ctx = c.getContext('2d');
+    ctx.translate(c.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(v, 0, 0);
+
+    const full = c.toDataURL('image/jpeg', 0.80);
+    capturedBase64 = full.split(',')[1];
+
+    document.getElementById('preview').src          = full;
+    document.getElementById('preview').style.display = 'block';
+    document.getElementById('videoEl').style.display = 'none';
+    document.getElementById('btn-capture').style.display = 'none';
+    document.getElementById('row-btns').style.display    = 'flex';
+    setMsg('✅ Photo captured. Confirm to save.');
+  }
+
+  /* ── RETAKE ────────────────────────────── */
+  function retakePhoto() {
+    capturedBase64 = null;
+    document.getElementById('preview').style.display     = 'none';
+    document.getElementById('videoEl').style.display     = 'block';
+    document.getElementById('btn-capture').style.display = 'block';
+    document.getElementById('row-btns').style.display    = 'none';
+    setMsg('Look at the camera and click Capture.');
+  }
+
+  /* ── CONFIRM ───────────────────────────── */
+  function confirmAndSend() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    document.getElementById('row-btns').style.display = 'none';
+    document.getElementById('loader').style.display   = 'block';
+    setMsg('⏳ Getting your location...');
+    getLocationThenSend(capturedBase64);
+  }
+
+  /* ── LOCATION → SEND ───────────────────── */
+  function getLocationThenSend(img) {
+    if (!navigator.geolocation) { sendToParent('No Geolocation', img); return; }
+    navigator.geolocation.getCurrentPosition(
+      p => sendToParent(p.coords.latitude.toFixed(5)+','+p.coords.longitude.toFixed(5), img),
+      () => sendToParent('Location Unavailable', img),
+      { timeout:10000, enableHighAccuracy:true }
+    );
+  }
+
+  /* ── POST MESSAGE TO PARENT ────────────── */
+  function sendToParent(loc, img) {
+    const payload = { type:'PUNCH_DATA', action, location:loc, imageBase64:img };
+    setMsg('✅ Sending data...');
+    document.getElementById('loader').style.display = 'none';
+
+    let sent = false;
+
+    /* 1. Try window.opener (popup) */
+    if (window.opener && !window.opener.closed) {
+      try {
+        window.opener.postMessage(payload, gasOrigin === '*' ? '*' : gasOrigin);
+        sent = true;
+      } catch(e) { console.warn('opener.postMessage failed', e); }
+    }
+
+    /* 2. Fallback: BroadcastChannel so any same-origin tab picks it up */
+    if (!sent) {
+      try {
+        const bc = new BroadcastChannel('punch_channel');
+        bc.postMessage(payload);
+        bc.close();
+        sent = true;
+      } catch(e) { console.warn('BroadcastChannel failed', e); }
+    }
+
+    /* Show done state */
+    document.getElementById('camera-section').style.display = 'none';
+    document.getElementById('done-box').style.display       = 'block';
+    setTimeout(() => { try { window.close(); } catch(e){} }, 2000);
+  }
+
+  function setMsg(t, isErr=false) {
+    const el = document.getElementById('msg');
+    el.textContent = t;
+    el.className   = 'msg' + (isErr ? ' err' : '');
+  }
+
+  window.onload = startCamera;
+</script>
+</body>
+</html>
